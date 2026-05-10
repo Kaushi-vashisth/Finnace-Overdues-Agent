@@ -10,7 +10,7 @@ def print_separator(title: str = ""):
         print("=" * 100)
 
 
-def print_email_preview(email_preview: dict):
+def print_email_preview(email_preview: dict) -> None:
     print_separator("GENERATED EMAIL DRAFT")
 
     print(f"To      : {email_preview.get('recipient', '')}")
@@ -18,11 +18,25 @@ def print_email_preview(email_preview: dict):
     print(f"Tone    : {email_preview.get('tone', '')}")
 
     print("\n" + "-" * 100)
-    print("BODY")
-    print("-" * 100)
-    print(email_preview.get("body", ""))
+    print("EMAIL CONTENT")
     print("-" * 100)
 
+    greeting = email_preview.get("greeting", "").strip()
+    body = email_preview.get("body", "").strip()
+    closing = email_preview.get("closing", "").strip()
+
+    if greeting:
+        print(greeting)
+        print()
+
+    if body:
+        print(body)
+        print()
+
+    if closing:
+        print(closing)
+
+    print("-" * 100)
 
 def print_audit_log(audit_log: dict):
     print_separator("AUDIT LOG")
@@ -146,7 +160,7 @@ if __name__ == "__main__":
         "invoice_no": "INV-2026-101",
         "client": "ABC Technologies Pvt Ltd",
         "amount": 45250.75,
-        "due_date": "11 May 2026",
+        "due_date": "2 April 2026",
         "contact_email": "finance@abctech.com",
         "followup_count": 1,
     }

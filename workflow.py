@@ -68,6 +68,12 @@ def generate_email_draft(state: AgentState) -> AgentState:
     if not payment_link:
         payment_link = generate_payment_link(invoice["invoice_no"])
 
+    subject = build_subject(
+        stage_meta["subject_template"],
+        invoice,
+        state["days_overdue"],
+    )
+
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", System_prompt),
@@ -91,6 +97,7 @@ def generate_email_draft(state: AgentState) -> AgentState:
         "payment_link": payment_link,
         "finance_contact": "finance@company.com",
         "validation_feedback": state.get("validation_feedback", "None"),
+        "subject": subject
     }
 
     email_draft = email_generation_chain.invoke(details)
@@ -127,26 +134,44 @@ def validate_draft_email(state: AgentState) -> AgentState:
         validation_status = "rejected"
         validation_feedback = f"Tone must be exactly '{stage_meta['tone']}'."
 
-    elif invoice["invoice_no"] not in email_draft.subject:
-        validation_status = "rejected"
-        validation_feedback = "Subject must include the invoice number."
-
     else:
-        for value in [
-            invoice["client"],
-            invoice["invoice_no"],
-            str(invoice["amount"]),
-            str(invoice["due_date"]),
-            str(state["days_overdue"]),
-            state["payment_link"],
-        ]:
-            if str(value) not in email_draft.body:
-                validation_status = "rejected"
-                validation_feedback = f"Email body must include: {value}"
-                break
+        # Validate exact subject match against deterministic template
+        expected_subject = build_subject(
+            stage_meta["subject_template"],
+            invoice,
+            state["days_overdue"],
+        )
 
-    if validation_status == "rejected":
-        retry_count += 1
+        if email_draft.subject.strip() != expected_subject.strip():
+            validation_status = "rejected"
+            validation_feedback = (
+                f"Subject must be exactly: '{expected_subject}'"
+            )
+
+        else:
+            # Validate required content in the body
+            full_email_text = " ".join([
+                email_draft.greeting,
+                email_draft.body,
+                email_draft.closing,
+            ])
+
+            required_values = [
+                invoice["client"],
+                invoice["invoice_no"],
+                str(invoice["due_date"]),
+                str(state["days_overdue"]),
+                state["payment_link"],
+            ]
+
+            for value in required_values:
+                if str(value) not in full_email_text:
+                    validation_status = "rejected"
+                    validation_feedback = f"Email must include: {value}"
+                    break
+
+            if validation_status == "rejected":
+                retry_count += 1
 
     if validation_status == "approved":
         user_decision = interrupt(
@@ -157,7 +182,9 @@ def validate_draft_email(state: AgentState) -> AgentState:
                 "email_preview": {
                     "recipient": str(email_draft.recipient),
                     "subject": email_draft.subject,
+                    "greeting": email_draft.greeting,
                     "body": email_draft.body,
+                    "closing": email_draft.closing,
                     "tone": email_draft.tone,
                 },
             }

@@ -6,16 +6,24 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class EmailDraft(BaseModel):
-    recipient: EmailStr = Field(description="Recipient email")
-    subject: str = Field(description="Email subject")
-    body: str = Field(description="Email body")
+    recipient: EmailStr = Field(description="Recipient email address")
+    subject: str = Field(description="Exact subject line provided by the workflow")
+    greeting: str = Field(
+        description="Opening salutation, e.g. 'Hi Rajesh,' or 'Dear Mr. Kapoor,'"
+    )
+    body: str = Field(
+        description="Main email body containing invoice details and payment request"
+    )
+    closing: str = Field(
+        description="Professional closing, e.g. 'Regards, Finance Team'"
+    )
     tone: Literal[
         "Warm & Friendly",
         "Polite but Firm",
         "Formal & Serious",
         "Stern & Urgent",
         "Legal Review Required",
-    ] = Field(description="Tone used in the email")
+    ] = Field(description="Communication tone used in the email")
 
 
 class InvoiceData(TypedDict):
@@ -39,6 +47,7 @@ class StageMeta(TypedDict):
     key_message: str
     cta: str
     escalation_required: bool
+    subject_template: str
 
 
 StageKey = Literal[
