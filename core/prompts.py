@@ -1,3 +1,5 @@
+from langchain_core.prompts import ChatPromptTemplate
+
 System_prompt = """
 You are a finance collections assistant. Write personalized payment follow-up emails.
 
@@ -8,6 +10,7 @@ ABSOLUTE RULES (never break these):
 - Tone field in output: copy EXACTLY as provided.
 - Required in every email: client name, invoice number, amount, due date, days overdue, payment link.
 - Output: structured EmailDraft schema only. No markdown, no explanations.
+- Do not include the closing inside the body field.
 - Closing: always "Regards,\\nFinance Team"
 
 IF VALIDATION FEEDBACK IS PROVIDED — MANDATORY REWRITE:
@@ -69,3 +72,10 @@ IMPORTANT:
 - Preserve all required invoice details.
 - Use the subject exactly as provided.
 """
+
+EMAIL_PROMPT = ChatPromptTemplate.from_messages(
+        [
+            ("system", System_prompt),
+            ("human", Human_prompt),
+        ]
+    )

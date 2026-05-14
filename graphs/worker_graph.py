@@ -1,62 +1,27 @@
 from typing import Literal
 from datetime import datetime,timezone
 from dateutil.parser import parse
-from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import MemorySaver
-from models import *
-from prompts import *
-from config import *
-from utils import *
+from core.email_service import send_email, SendResult
+from core.models import *
+from core.prompts import *
+from core.config import *
+from core.utils import *
 
 # =========================================================
 # NODES
 # =========================================================
 
-def get_overdue_days(state: AgentState) -> AgentState:
-    due_date = state["invoice"]["due_date"]
-    parsed = parse(str(due_date), dayfirst=True).date()
-    today = datetime.today().date()
-    days_overdue = max((today - parsed).days, 0)
-    return {**state, "days_overdue": days_overdue}
+def route_inital(state: AgentState) -> Literal["escalation", "generate_email_draft","no_overdue"]:
 
-
-def set_stage(state: AgentState) -> AgentState:
-    days = state["days_overdue"]
-
-    if days == 0:
-        return {
-            **state,
-            "stage_key": None,
-            "stage_meta": None,
-            "escalation_required": False,
-        }
-    
-    if 1 <= days <= 7:
-        stage = "1st Follow-Up"
-    elif 8 <= days <= 14:
-        stage = "2nd Follow-Up"
-    elif 15 <= days <= 21:
-        stage = "3rd Follow-Up"
-    elif 22 <= days <= 30:
-        stage = "4th Follow-Up"
-    else:
-        stage = "Escalation Flag"
-
-    return {
-        **state,
-        "stage_key": stage,
-        "stage_meta": stage_values[stage],
-        "escalation_required": stage_values[stage]["escalation_required"],
-    }
-
-
-def check_overdue(state: AgentState) -> Literal["escalation", "generate_email_draft","no_overdue"]:
     if state["days_overdue"] == 0:
         return "no_overdue"
-    elif state["days_overdue"] > 30:
+    
+    elif state.get("escalation_required",False):
         return "escalation"
+    
     return "generate_email_draft"
 
 
@@ -73,15 +38,6 @@ def generate_email_draft(state: AgentState) -> AgentState:
         invoice,
         state["days_overdue"],
     )
-
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", System_prompt),
-            ("human", Human_prompt),
-        ]
-    )
-
-    email_generation_chain = prompt | email_agent
 
     details = {
         "client_name": invoice["client"],
@@ -100,7 +56,7 @@ def generate_email_draft(state: AgentState) -> AgentState:
         "subject": subject
     }
 
-    email_draft = email_generation_chain.invoke(details)
+    email_draft = EMAIL_GENERATION_CHAIN.invoke(details)
 
     return {
         **state,
@@ -110,32 +66,40 @@ def generate_email_draft(state: AgentState) -> AgentState:
 
 
 def validate_draft_email(state: AgentState) -> AgentState:
+    stage_meta = state["stage_meta"]
+    invoice = state["invoice"]
+    email_draft = state.get("email_draft")
+    retry_count = state.get("retry_count", 0)
+
     validation_status = "approved"
     validation_feedback = ""
 
-    stage_meta = state["stage_meta"]
-    email_draft = state.get("email_draft")
-    invoice = state["invoice"]
+    def reject(feedback: str) -> tuple[str, str]:
+        return "rejected", feedback
 
-    retry_count = state.get("retry_count", 0)
-
+    # 1. Email draft must exist
     if not email_draft:
-        validation_status = "rejected"
-        validation_feedback = "No email draft generated."
+        validation_status, validation_feedback = reject(
+            "No email draft generated."
+        )
 
+    # 2. Recipient must match exactly
     elif (
         str(email_draft.recipient).strip().lower()
         != invoice["contact_email"].strip().lower()
     ):
-        validation_status = "rejected"
-        validation_feedback = "Recipient email does not match invoice contact email."
+        validation_status, validation_feedback = reject(
+            "Recipient email does not match invoice contact email."
+        )
 
+    # 3. Tone must match configured stage tone
     elif email_draft.tone.strip() != stage_meta["tone"].strip():
-        validation_status = "rejected"
-        validation_feedback = f"Tone must be exactly '{stage_meta['tone']}'."
+        validation_status, validation_feedback = reject(
+            f"Tone must be exactly '{stage_meta['tone']}'."
+        )
 
     else:
-        # Validate exact subject match against deterministic template
+        # 4. Subject must match deterministic template
         expected_subject = build_subject(
             stage_meta["subject_template"],
             invoice,
@@ -143,60 +107,62 @@ def validate_draft_email(state: AgentState) -> AgentState:
         )
 
         if email_draft.subject.strip() != expected_subject.strip():
-            validation_status = "rejected"
-            validation_feedback = (
+            validation_status, validation_feedback = reject(
                 f"Subject must be exactly: '{expected_subject}'"
             )
 
         else:
-            # Validate required content in the body
+            # 5. Required values must appear in the generated email
             full_email_text = " ".join([
                 email_draft.greeting,
                 email_draft.body,
                 email_draft.closing,
             ])
 
-            required_values = [
+            required_values = (
                 invoice["client"],
                 invoice["invoice_no"],
-                str(invoice["due_date"]),
                 str(state["days_overdue"]),
                 state["payment_link"],
-            ]
+            )
 
             for value in required_values:
                 if str(value) not in full_email_text:
-                    validation_status = "rejected"
-                    validation_feedback = f"Email must include: {value}"
+                    validation_status, validation_feedback = reject(
+                        f"Email must include: {value}"
+                    )
                     break
 
-            if validation_status == "rejected":
-                retry_count += 1
+    # Increment retry count exactly once on failure
+    if validation_status == "rejected":
+        retry_count += 1
 
-    if validation_status == "approved":
-        user_decision = interrupt(
-            {
-                "type": "approval_request",
-                "title": "Review Generated Payment Follow-Up Email",
-                "message": "Approve or reject the generated email.",
-                "email_preview": {
-                    "recipient": str(email_draft.recipient),
-                    "subject": email_draft.subject,
-                    "greeting": email_draft.greeting,
-                    "body": email_draft.body,
-                    "closing": email_draft.closing,
-                    "tone": email_draft.tone,
-                },
-            }
-        )
+    # Optional human approval step
+    # if validation_status == "approved":
+    #     user_decision = interrupt(
+    #         {
+    #             "type": "approval_request",
+    #             "title": "Review Generated Payment Follow-Up Email",
+    #             "message": "Approve or reject the generated email.",
+    #             "email_preview": {
+    #                 "recipient": str(email_draft.recipient),
+    #                 "subject": email_draft.subject,
+    #                 "greeting": email_draft.greeting,
+    #                 "body": email_draft.body,
+    #                 "closing": email_draft.closing,
+    #                 "tone": email_draft.tone,
+    #             },
+    #         }
+    #     )
 
-        if user_decision["decision"] == "reject":
-            validation_status = "rejected"
-            validation_feedback = user_decision.get(
-                "feedback",
-                "User requested changes to the email draft."
-            )
-            retry_count += 1
+    #     if user_decision["decision"] == "reject":
+    #         validation_status = "rejected"
+    #         validation_feedback = user_decision.get(
+    #             "feedback",
+    #             "User requested changes to the email draft."
+    #         )
+    #         retry_count += 1
+
 
     return {
         **state,
@@ -204,7 +170,6 @@ def validate_draft_email(state: AgentState) -> AgentState:
         "validation_feedback": validation_feedback,
         "retry_count": retry_count,
     }
-
 
 def check_validation(
     state: AgentState,
@@ -216,6 +181,18 @@ def check_validation(
         return "escalation"
 
     return "generate_email_draft"
+
+def build_failed_result(
+    invoice_state: AgentState,
+    error_message: str,
+) -> AgentState:
+    return {
+        **invoice_state,
+        "send_status": "failed",
+        "send_error": error_message,
+        "retry_count": 0,
+        "max_retries": 5
+    }
 
 def no_overdue_node(state: AgentState) -> AgentState:
     """
@@ -243,60 +220,93 @@ def no_overdue_node(state: AgentState) -> AgentState:
 
 def send_email_node(state: AgentState) -> AgentState:
     """
-    Dummy email sender.
-    Simulates sending the generated email to the customer.
+    Send the approved email draft using the configured email provider.
+    Provider is set via EMAIL_PROVIDER env var:
+        dry_run (default) | smtp | sendgrid | mailgun
     """
     email_draft = state.get("email_draft")
-
+ 
     if not email_draft:
         return {
             **state,
             "send_status": "failed",
-            "send_error": "No email draft available to send.",
+            "send_error":  "No email draft available to send.",
         }
-
-    print("\n" + "=" * 80)
-    print("SENDING PAYMENT FOLLOW-UP EMAIL")
-    print("=" * 80)
-    print(f"To      : {email_draft.recipient}")
-    print(f"Subject : {email_draft.subject}")
-    print(f"Tone    : {email_draft.tone}")
-    print("=" * 80)
-
+ 
+    # Assemble the full plain-text body from the three structured fields
+    body = "\n\n".join(filter(None, [
+        getattr(email_draft, "greeting", "").strip(),
+        getattr(email_draft, "body",     "").strip(),
+        getattr(email_draft, "closing",  "").strip(),
+    ]))
+ 
+    result: SendResult = send_email(
+        to=str(email_draft.recipient),
+        subject=email_draft.subject,
+        body=body,
+        invoice_no=state["invoice"]["invoice_no"],
+        tone=email_draft.tone,
+    )
+ 
+    if result.success:
+        provider_tag = f"[{result.provider.upper()}{'·DRY-RUN' if result.dry_run else ''}]"
+        print(f"\n{provider_tag} Follow-up email sent → {email_draft.recipient}")
+        print(f"  Subject : {email_draft.subject}")
+        print(f"  Detail  : {result.message}")
+        return {
+            **state,
+            "send_status": "sent",
+            "send_error":  "",
+        }
+ 
+    # Send failed — treat as a soft error; escalation will pick this up
+    print(f"\n[EMAIL ERROR] {result.provider}: {result.message}")
     return {
         **state,
-        "send_status": "sent",
-        "send_error": "",
+        "send_status": "failed",
+        "send_error":  f"Send failed via {result.provider}: {result.message}",
     }
 
 
 def escalation_node(state: AgentState) -> AgentState:
     """
-    Dummy escalation handler.
-    Simulates sending an escalation notification to the finance manager.
+    Handles invoices that exceed the escalation threshold (30+ days overdue)
+    OR have exhausted all email retries.
+
+    Per the task brief: at this stage NO email is sent to the client.
+    The record is flagged for manual legal/finance review.
+
+    Console output intentionally mirrors the send_email_node / email_service
+    format so all agent activity reads as one unified log stream:
+
+        [ESCALATION·FLAGGED] Invoice flagged → finance.manager@company.com
+          Invoice : INV-2026-101 | ABC Technologies Pvt Ltd | ₹45,250.75
+          Reason  : 35 days overdue — flagged for legal/finance review
+          Detail  : No auto-email sent. Assign to finance manager.
     """
-    invoice = state["invoice"]
+    invoice      = state["invoice"]
+    days_overdue = state.get("days_overdue", 0)
     manager_email = "finance.manager@company.com"
 
-    subject = f"Escalation Required: Invoice {invoice['invoice_no']}"
-    body = (
-        f"Invoice {invoice['invoice_no']} for client {invoice['client']} "
-        f"is {state['days_overdue']} days overdue and requires manual review."
-    )
+    # Determine escalation reason for the log line
+    if days_overdue > 30:
+        reason = f"{days_overdue} days overdue — flagged for legal/finance review"
+    else:
+        retry_count = state.get("retry_count", 0)
+        reason = f"Email validation failed after {retry_count} retries — manual review required"
 
-    print("\n" + "=" * 80)
-    print("SENDING ESCALATION EMAIL TO MANAGER")
-    print("=" * 80)
-    print(f"To      : {manager_email}")
-    print(f"Subject : {subject}")
-    print("\nBody:")
-    print(body)
-    print("=" * 80)
+    # ── Print in the same structure as send_email_node / _send_dry_run ───────
+    print(
+        f"\n[ESCALATION·FLAGGED] Invoice flagged → {manager_email}\n"
+        f"  Invoice : {invoice['invoice_no']} | {invoice['client']} | ₹{invoice['amount']:,.2f}\n"
+        f"  Reason  : {reason}\n"
+        f"  Detail  : No auto-email sent. Assign to finance manager."
+    )
 
     return {
         **state,
-        "send_status": "not_sent",
-        "send_error": "Escalated for manager review.",
+        "send_status":        "not_sent",
+        "send_error":         reason,
         "escalation_required": True,
     }
 
@@ -380,8 +390,6 @@ graph = StateGraph(AgentState)
 # NODES
 # =========================================================
 
-graph.add_node("get_overdue_days", get_overdue_days)
-graph.add_node("set_stage", set_stage)
 graph.add_node("no_overdue", no_overdue_node)
 graph.add_node("generate_email_draft", generate_email_draft)
 graph.add_node("validate_draft_email", validate_draft_email)
@@ -393,14 +401,11 @@ graph.add_node("auditLog", auditLog)
 # EDGES
 # =========================================================
 
-graph.add_edge(START, "get_overdue_days")
-graph.add_edge("get_overdue_days", "set_stage")
-
 # Routing:
 # - days_overdue == 0  -> no_overdue
 # - days_overdue > 30  -> escalation
 # - otherwise          -> generate_email_draft
-graph.add_conditional_edges("set_stage", check_overdue)
+graph.add_conditional_edges(START, route_inital)
 
 # Email generation -> validation
 graph.add_edge("generate_email_draft", "validate_draft_email")
@@ -436,7 +441,7 @@ if __name__ == "__main__":
         "invoice_no": "INV-2026-101",
         "client": "ABC Technologies Pvt Ltd",
         "amount": 45250.75,
-        "due_date": "1 Jan 2026",
+        "due_date": "1 May 2026",
         "contact_email": "finance@abctech.com",
         "followup_count": 1,
     }

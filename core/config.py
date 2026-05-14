@@ -1,4 +1,5 @@
-from models import StageKey,StageMeta
+from core.models import StageKey,StageMeta
+import os
 
 stage_values: dict[StageKey, StageMeta] = {
     "1st Follow-Up": {
@@ -53,5 +54,50 @@ stage_values: dict[StageKey, StageMeta] = {
          "subject_template": (
             "Escalation Required – Invoice #{invoice_no}"
         ),
-    },
+    }
 }
+
+REQUIRED_COLUMNS = {
+    "client_name",
+    "recipient_email",
+    "invoice_number",
+    "amount",
+    "due_date"
+}
+
+MAX_RETRY_ATTEMPTS = int(
+    os.getenv("WORKER_MAX_RETRY_ATTEMPTS", 5)
+)
+
+INITIAL_BACKOFF_SECONDS = int(
+    os.getenv("WORKER_INITIAL_BACKOFF_SECONDS", 2)
+)
+
+DELAY_BETWEEN_INVOICES = float(
+    os.getenv("WORKER_DELAY_BETWEEN_INVOICES", 1)
+)
+
+# Background scheduler settings
+FAILED_INVOICE_SCHEDULER_INTERVAL_MINUTES = int(
+    os.getenv("FAILED_INVOICE_SCHEDULER_INTERVAL_MINUTES", "2")
+)
+
+FAILED_INVOICE_BATCH_SIZE = int(
+    os.getenv("FAILED_INVOICE_BATCH_SIZE", "100")
+)
+
+FAILED_INVOICE_MAX_BACKOFF_MINUTES = int(
+    os.getenv("FAILED_INVOICE_MAX_BACKOFF_MINUTES", "60")
+)
+
+FAILED_INVOICE_SCHEDULER_TIMEZONE = os.getenv(
+    "FAILED_INVOICE_SCHEDULER_TIMEZONE",
+    "UTC",
+)
+
+FAILED_INVOICE_SCHEDULER_MISFIRE_GRACE_SECONDS = int(
+    os.getenv(
+        "FAILED_INVOICE_SCHEDULER_MISFIRE_GRACE_SECONDS",
+        "60",
+    )
+)
