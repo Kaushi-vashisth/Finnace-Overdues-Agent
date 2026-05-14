@@ -43,7 +43,7 @@ def generate_email_draft(state: AgentState) -> AgentState:
         "client_name": invoice["client"],
         "recipient_email": invoice["contact_email"],
         "invoice_id": invoice["invoice_no"],
-        "amount": invoice["amount"],
+        "amount": format_currency(invoice["amount"]),
         "due_date": invoice["due_date"],
         "days_overdue": state["days_overdue"],
         "stage": state["stage_key"],
