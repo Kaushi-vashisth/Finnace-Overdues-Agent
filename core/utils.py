@@ -124,3 +124,23 @@ def compute_file_hash(file_path: str) -> str:
             sha256.update(chunk)
 
     return sha256.hexdigest()
+
+def format_currency(amount) -> str:
+    """
+    Format numeric amounts as INR unless a currency code/symbol
+    is already present in the input string.
+    """
+    if isinstance(amount, str):
+        amount = amount.strip()
+
+        currency_prefixes = (
+            "INR", "USD", "EUR", "GBP",
+            "₹", "$", "€", "£"
+        )
+
+        if amount.startswith(currency_prefixes):
+            return amount
+
+        amount = float(amount)
+
+    return f"INR {float(amount):,.2f}"
