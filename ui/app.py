@@ -23,12 +23,10 @@ import sys
 import time
 import logging
 import tempfile
-import threading
 import subprocess
 
 import pandas as pd
 import streamlit as st
-from core.config import FAILED_INVOICE_SCHEDULER_INTERVAL_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +42,28 @@ def _boot_services() -> None:
     global _scheduler
     if _scheduler is not None:
         return
+
     try:
         from database.schema import initialize_database
         initialize_database()
     except Exception as exc:
         logger.warning("DB init warning: %s", exc)
+
+    try:
+        from observability.tracing import configure_tracing
+        configure_tracing()
+    except Exception as exc:
+        logger.warning("Tracing setup warning: %s", exc)
+
     try:
         from scheduler.retry_scheduler import start_scheduler
         _scheduler = start_scheduler()
     except Exception as exc:
         logger.warning("Scheduler start warning: %s", exc)
 
-_boot_services()
+if "services_booted" not in st.session_state:
+    _boot_services()
+    st.session_state["services_booted"] = True
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -63,6 +71,7 @@ st.set_page_config(
     page_icon="💳",
     layout="wide",
 )
+from core.config import FAILED_INVOICE_SCHEDULER_INTERVAL_MINUTES
 
 # ── Sidebar navigation ────────────────────────────────────────────────────────
 st.sidebar.title("💳 CreditFlow AI")
@@ -167,72 +176,6 @@ def _status_badge(status: str) -> str:
         f'letter-spacing:0.05em">{status.upper()}</span>'
     )
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  BACKGROUND JOB RUNNER
-# ══════════════════════════════════════════════════════════════════════════════
-
-_active_job_threads: set[int] = set()
-_thread_lock = threading.Lock()
-
-
-def _run_job_in_background(job_id: int, csv_path: str) -> None:
-    """
-    Spawn a daemon thread to run the master graph workflow.
-    Returns immediately — caller must not wait on it.
-
-    IMPORTANT: csv_path must still exist on disk when this is called.
-    The caller is responsible for NOT deleting the temp file before this
-    function returns (the thread will delete it when done).
-    """
-    with _thread_lock:
-        if job_id in _active_job_threads:
-            return          # already in flight, do not double-launch
-        _active_job_threads.add(job_id)
-
-    def _target() -> None:
-        try:
-            from database.jobs_repository import JobsRepository
-            repo = JobsRepository()
-            repo.update_status(job_id, "running")
-
-            from graphs.master_graph import workflow
-            workflow.invoke({
-                "job_id":     job_id,
-                "csv_path":   csv_path,
-                "batch_size": 10,
-            })
-
-            repo.update_status(job_id, "completed")
-
-        except Exception as exc:
-            logger.error("Job %s failed: %s", job_id, exc, exc_info=True)
-            try:
-                from database.jobs_repository import JobsRepository
-                JobsRepository().update_status(job_id, "failed", str(exc))
-            except Exception:
-                pass
-
-        finally:
-            # Clean up the temp file that was kept alive for this thread.
-            if csv_path and csv_path.startswith(tempfile.gettempdir()):
-                try:
-                    os.unlink(csv_path)
-                except OSError:
-                    pass
-            with _thread_lock:
-                _active_job_threads.discard(job_id)
-
-    t = threading.Thread(target=_target, daemon=True, name=f"job-{job_id}")
-    t.start()
-
-
-def _job_is_active(job_id: int) -> bool:
-    """True if a background thread is currently running this job."""
-    with _thread_lock:
-        return job_id in _active_job_threads
-
-
 # ── Auto-refresh poll interval ────────────────────────────────────────────────
 _POLL_INTERVAL = 2   # seconds between DB polls while job is active
 
@@ -270,7 +213,7 @@ def _render_live_job(job_id: int, *, auto_refresh: bool = True) -> None:
             text=f"Processed {processed} / {total}",
         )
 
-    still_active = _job_is_active(job_id) or status in ("running", "queued")
+    still_active = status in ("running", "queued")
 
     if still_active and auto_refresh:
         st.caption(f"⟳ Auto-refreshing every {_POLL_INTERVAL} s…")
@@ -362,20 +305,11 @@ def page_upload() -> None:
 
                     # Step 4: dispatch background job
                     if flag not in (True, "in_progress"):
-                        st.write("🚀 Dispatching AI pipeline in the background…")
-                        job_record = _get_job(job_id)
-                        saved_path = (
-                            job_record.get("file_path", "") if job_record else ""
-                        ) or tmp_path or ""
-                        _run_job_in_background(job_id, saved_path)
-                        if saved_path and saved_path != tmp_path and tmp_path:
-                            try:
-                                os.unlink(tmp_path)
-                            except OSError:
-                                pass
-                        tmp_path = None   # background thread now owns it
+                        st.write("🚀 AI pipeline has been started in the background.")
                     else:
-                        st.write("ℹ️ Duplicate or in-progress file detected — skipping dispatch.")
+                        st.write(
+                            "ℹ️ Duplicate or in-progress file detected — skipping dispatch."
+                        )
 
                     st.session_state.submitted_job_id   = job_id
                     st.session_state.upload_result_flag = flag
@@ -509,7 +443,7 @@ def page_jobs() -> None:
     st.markdown(f"**Job #{selected}**")
 
     job       = _get_job(int(selected))
-    is_active = _job_is_active(int(selected)) or bool(
+    is_active = bool(
         job and job.get("status") in ("running", "queued")
     )
 

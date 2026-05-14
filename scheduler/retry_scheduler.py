@@ -36,16 +36,16 @@ def retry_failed_invoices() -> None:
             invoice_no = invoice_state["invoice"]["invoice_no"]
 
             config = {
+                "run_name": f"Retry Invoice {invoice_no}",
+                "tags": ["retry", "worker"],
+                "metadata": {
+                    "invoice_no": invoice_no,
+                    "failed_id": failed_id,
+                    "retry": True,
+                },
                 "configurable": {
-                    "thread_id": (
-                        f"retry-invoice-{invoice_no}-{failed_id}"
-                    ),
-                    "metadata": {
-                        "invoice_no": invoice_no,
-                        "failed_id": failed_id,
-                        "retry": True,
-                    },
-                }
+                    "thread_id": f"retry-invoice-{invoice_no}-{failed_id}",
+                },
             }
 
             # Run the worker graph

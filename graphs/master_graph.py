@@ -4,6 +4,8 @@ from collections import defaultdict
 from database.audit_repository import AuditRepository 
 from database.failed_repository import FailedInvoicesRepository
 from database.jobs_repository import JobsRepository
+from langsmith import traceable
+import time
 from core.models import *
 from core.utils import *
 from core.config import *
@@ -90,29 +92,47 @@ def create_batches (state : MasterState) -> MasterState:
         "grouped_records": {}
     }
 
-import time
+def process_batch(
+    job_id: int,
+    batch_id: str,
+    stage: str,
+    records: list,
+) -> list[dict]:
+    """
+    Process all invoices in a single batch.
 
+    LangSmith trace hierarchy:
+        Master Workflow
+        └── Batch 4th Follow-Up_1
+            ├── Invoice INV-2026-001
+            ├── Invoice INV-2026-002
+            └── ...
+    """
+    # Create a dynamic batch-level trace with a human-readable name
+    @traceable(name=f"Batch {batch_id}")
+    def _process() -> list[dict]:
+        worker_results = []
 
-def dispatch_batches(state: MasterState) -> MasterState:
-    job_id = state["job_id"]
-    worker_results = []
-
-    for batch in state["batches"]:
-        batch_id = batch["batch_id"]
-        stage = batch["stage"]
-
-        for invoice_state in batch["records"]:
+        for invoice_state in records:
             invoice_no = invoice_state["invoice"]["invoice_no"]
 
             config = {
+                "run_name": f"Invoice {invoice_no}",
+                "tags": [
+                    "worker",
+                    f"job-{job_id}",
+                    f"batch-{batch_id}",
+                    f"stage-{stage}",
+                ],
+                "metadata": {
+                    "job_id": job_id,
+                    "batch_id": batch_id,
+                    "stage": stage,
+                    "invoice_no": invoice_no,
+                },
                 "configurable": {
                     "thread_id": f"invoice-{invoice_no}",
-                    "metadata": {
-                        "job_id": job_id,
-                        "batch_id": batch_id,
-                        "invoice_no": invoice_no
-                    }
-                }
+                },
             }
 
             result = None
@@ -133,7 +153,6 @@ def dispatch_batches(state: MasterState) -> MasterState:
                         )
                         break
 
-                    # Last retry attempt exhausted
                     if attempt == MAX_RETRY_ATTEMPTS - 1:
                         result = build_failed_result(
                             invoice_state,
@@ -190,11 +209,36 @@ def dispatch_batches(state: MasterState) -> MasterState:
             # Throttle requests to reduce rate limiting
             time.sleep(DELAY_BETWEEN_INVOICES)
 
+        return worker_results
+
+    return _process()
+
+def dispatch_batches(state: MasterState) -> MasterState:
+    job_id = state["job_id"]
+    worker_results = []
+
+    for batch in state["batches"]:
+        batch_id = batch["batch_id"]
+        stage = batch["stage"]
+
+        # Creates a dedicated LangSmith trace:
+        #   Batch 4th Follow-Up_1
+        # and nested invoice traces:
+        #   Invoice INV-2026-001
+        #   Invoice INV-2026-002
+        batch_results = process_batch(
+            job_id=job_id,
+            batch_id=batch_id,
+            stage=stage,
+            records=batch["records"],
+        )
+
+        worker_results.extend(batch_results)
+
     return {
         "worker_results": worker_results,
         "status": "workers_completed",
     }
-
 
 def monitor_node(state: MasterState) -> MasterState:
     job_id = state["job_id"]
