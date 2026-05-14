@@ -1,7 +1,8 @@
-from typing import TypedDict, Literal, Optional, Any
+from typing import TypedDict, Literal, Optional, Any, List, Dict
 from pydantic import BaseModel, Field, EmailStr
 from langchain_mistralai import ChatMistralAI
 from dotenv import load_dotenv
+from core.prompts import EMAIL_PROMPT
 
 load_dotenv()
 
@@ -77,3 +78,16 @@ class AgentState(TypedDict, total=False):
 
 model = ChatMistralAI(temperature=0.2)
 email_agent = model.with_structured_output(EmailDraft)
+EMAIL_GENERATION_CHAIN = EMAIL_PROMPT | email_agent
+
+class MasterState(TypedDict, total=False):
+    job_id : int
+    csv_path: str
+    raw_records: List[Dict[str, Any]]
+    normalized_records: List[Dict[str, Any]]
+    grouped_records: Dict[str, List[Dict[str, Any]]]
+    batches: List[Dict[str, Any]]
+    worker_results: List[Dict[str, Any]]
+    metrics: Dict[str, Any]
+    errors: List[str]
+    status: str

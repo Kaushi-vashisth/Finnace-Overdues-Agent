@@ -1,0 +1,6 @@
+client_name,recipient_email,invoice_number,amount,due_date
+Acme Technologies Pvt Ltd,accounts@acmetech.com,INV-2026-001,12500.0,2026-04-15
+Bright Solutions,finance@brightsolutions.in,INV-2026-002,8700.5,2026-04-25
+Nexus Retail,billing@nexusretail.com,INV-2026-003,45200.75,2026-03-30
+Orbit Logistics,payments@orbitlogistics.in,INV-2026-004,15999.99,2026-05-05
+Zenith Healthcare,accounts.payable@zenithhealthcare.com,INV-2026-005,22340.0,2026-04-10

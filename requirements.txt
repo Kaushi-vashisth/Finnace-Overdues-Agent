@@ -5,6 +5,9 @@ langchain_mistralai
 
 python-dotenv
 streamlit
+streamlit-option-menu
+plotly
+pandas
 email-validator
 pydantic
 python-dateutil

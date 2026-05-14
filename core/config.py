@@ -1,4 +1,4 @@
-from models import StageKey,StageMeta
+from core.models import StageKey,StageMeta
 
 stage_values: dict[StageKey, StageMeta] = {
     "1st Follow-Up": {
@@ -53,5 +53,13 @@ stage_values: dict[StageKey, StageMeta] = {
          "subject_template": (
             "Escalation Required – Invoice #{invoice_no}"
         ),
-    },
+    }
+}
+
+REQUIRED_COLUMNS = {
+    "client_name",
+    "recipient_email",
+    "invoice_number",
+    "amount",
+    "due_date"
 }
