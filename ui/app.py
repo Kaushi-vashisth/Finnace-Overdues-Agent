@@ -28,6 +28,7 @@ import subprocess
 
 import pandas as pd
 import streamlit as st
+from core.config import FAILED_INVOICE_SCHEDULER_INTERVAL_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -100,14 +101,20 @@ def _get_audit_logs(job_id: int) -> list:
     return _audit_repo.get_by_job(job_id)
 
 def _get_retryable() -> list:
-    return _failed_repo.get_retryable()
+    return _failed_repo.list_all(limit=100)
 
-def _get_all_audit_logs(limit: int = 300) -> list:
+def _get_all_audit_logs(limit: int = 300, job_id: int | None = None) -> list:
     from database.db import get_connection
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        if job_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM audit_logs WHERE job_id = ? ORDER BY id DESC LIMIT ?",
+                (job_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -127,10 +134,21 @@ def _to_df(records: list) -> pd.DataFrame:
 
 
 def _dataframe(df: pd.DataFrame, **kwargs) -> None:
+    """
+    Render a dataframe.  Uses the new `width` parameter to avoid the
+    use_container_width deprecation warning (removed after 2025-12-31).
+    Falls back gracefully for older Streamlit installs.
+    """
+    # Remove any caller-supplied use_container_width to avoid conflicts.
+    kwargs.pop("use_container_width", None)
     try:
-        st.dataframe(df, use_container_width=True, hide_index=True, **kwargs)
+        st.dataframe(df, width="stretch", hide_index=True, **kwargs)
     except TypeError:
-        st.dataframe(df, hide_index=True, **kwargs)
+        # Streamlit version that doesn't yet support width='stretch'
+        try:
+            st.dataframe(df, use_container_width=True, hide_index=True, **kwargs)
+        except TypeError:
+            st.dataframe(df, hide_index=True, **kwargs)
 
 
 # ── Job status badge ──────────────────────────────────────────────────────────
@@ -316,54 +334,62 @@ def page_upload() -> None:
             st.warning(f"Could not render preview: {exc}")
 
         if st.button("🚀 Start Processing", type="primary"):
-            with st.spinner("Hashing file and checking for duplicates…"):
-                tmp_path = None
+            tmp_path = None
+            # ── Multi-step status panel ───────────────────────────────────
+            with st.status("Preparing your file…", expanded=True) as upload_status:
                 try:
+                    # Step 1: save to temp
+                    st.write("💾 Saving file to temporary storage…")
                     suffix = os.path.splitext(uploaded_file.name)[-1] or ".csv"
                     with tempfile.NamedTemporaryFile(
                         delete=False, suffix=suffix
                     ) as tmp:
                         tmp.write(uploaded_file.getbuffer())
                         tmp_path = tmp.name
+                    st.write(f"✅ File saved — **{uploaded_file.size / 1024:.1f} KB**")
 
+                    # Step 2: hash + duplicate check
+                    st.write("🔐 Computing SHA-256 hash & checking for duplicates…")
                     from core.upload_handler import handle_csv_upload
                     result = handle_csv_upload(tmp_path)
 
-                    # ── Decode result ─────────────────────────────────────
+                    # Step 3: decode result
+                    st.write("📊 Parsing invoice rows…")
                     if isinstance(result, (tuple, list)) and len(result) >= 2:
                         job_id, flag = int(result[0]), result[1]
                     else:
                         job_id, flag = int(result), False
 
-                    # ── New job → launch background thread ────────────────
-                    # NOTE: do NOT delete tmp_path here; the background
-                    # thread owns it and will unlink it when done.
+                    # Step 4: dispatch background job
                     if flag not in (True, "in_progress"):
-                        job_record  = _get_job(job_id)
-                        # Prefer the path stored by handle_csv_upload (it
-                        # may have copied the file to a permanent location).
-                        saved_path  = (
+                        st.write("🚀 Dispatching AI pipeline in the background…")
+                        job_record = _get_job(job_id)
+                        saved_path = (
                             job_record.get("file_path", "") if job_record else ""
                         ) or tmp_path or ""
                         _run_job_in_background(job_id, saved_path)
-                        # Only delete tmp if it differs from saved_path
-                        # (i.e. handle_csv_upload copied it elsewhere).
                         if saved_path and saved_path != tmp_path and tmp_path:
                             try:
                                 os.unlink(tmp_path)
                             except OSError:
                                 pass
-                        tmp_path = None   # prevent finally-block deletion
+                        tmp_path = None   # background thread now owns it
+                    else:
+                        st.write("ℹ️ Duplicate or in-progress file detected — skipping dispatch.")
 
                     st.session_state.submitted_job_id   = job_id
                     st.session_state.upload_result_flag = flag
+                    upload_status.update(
+                        label="✅ Upload complete — pipeline is running!",
+                        state="complete",
+                        expanded=False,
+                    )
 
                 except Exception as exc:
+                    upload_status.update(label="❌ Upload failed", state="error")
                     st.error(f"Upload failed: {exc}")
                     return
                 finally:
-                    # Only clean up if we still own the file (background
-                    # thread was NOT launched, or launch was skipped).
                     if tmp_path and os.path.exists(tmp_path):
                         try:
                             os.unlink(tmp_path)
@@ -459,11 +485,6 @@ def page_jobs() -> None:
     if "Created At" in tdf.columns:
         tdf["Created At"] = tdf["Created At"].astype(str).str[:19]
 
-    # ── FIX 1: cast to float before .round() so pd.NA (NAType) is handled ──
-    # Division by pd.NA produces pd.NA, which has object dtype and causes
-    # "NAType doesn't define __round__ method" when pandas tries to round it.
-    # Casting to float first converts pd.NA → NaN (a proper float), which
-    # round() and fillna() can handle without error.
     if "Sent" in tdf.columns and "Total" in tdf.columns:
         tdf["Success %"] = pd.to_numeric(
             tdf["Sent"] / tdf["Total"].replace(0, pd.NA) * 100,
@@ -596,6 +617,7 @@ def _email_card(log: dict) -> None:
     overdue    = log.get("days_overdue", "—")
     ts         = str(log.get("created_at", ""))[:19]
     error_msg  = str(log.get("error_message", "") or "")
+    job_id_val = log.get("job_id", "—")
 
     amount_str = (
         f"₹{amount:,.0f}" if isinstance(amount, (int, float)) else str(amount or "—")
@@ -611,6 +633,10 @@ def _email_card(log: dict) -> None:
         f'<div style="color:#f87171;margin-top:6px"><b>Error:</b> {error_msg}</div>'
         if error_msg else ""
     )
+    job_badge = (
+        f'<span style="background:#1e40af22;color:#93c5fd;padding:1px 8px;'
+        f'border-radius:99px;font-size:0.70rem;font-weight:600">Job #{job_id_val}</span>'
+    )
 
     st.markdown(
         f"""
@@ -618,7 +644,10 @@ def _email_card(log: dict) -> None:
             margin-bottom:10px;overflow:hidden;font-size:0.82rem">
   <div style="background:{header_bg};padding:7px 14px;display:flex;
               justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
-    <span style="color:#94a3b8;font-family:monospace">{ts}</span>
+    <span style="display:flex;align-items:center;gap:8px">
+      <span style="color:#94a3b8;font-family:monospace">{ts}</span>
+      {job_badge}
+    </span>
     <span style="color:#f8fafc;font-weight:700;font-family:monospace">
       {icon} {send_status.upper()}{escalation_badge}
     </span>
@@ -646,17 +675,37 @@ def page_email_logs() -> None:
         "Terminal-style log of every email and escalation dispatched by the agent."
     )
 
-    col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 3, 1])
+    # ── Load jobs for the job filter ──────────────────────────────────────
+    try:
+        all_jobs = _list_jobs(limit=100)
+    except Exception:
+        all_jobs = []
+
+    job_options: dict[str, int | None] = {"All Jobs": None}
+    for j in all_jobs:
+        jid   = int(j.get("id", j.get("job_id", 0)))
+        label = (
+            f"Job #{jid}  —  "
+            f"{str(j.get('status', '')).upper()}  "
+            f"({str(j.get('created_at', ''))[:16]})"
+        )
+        job_options[label] = jid
+
+    # ── Filter row ────────────────────────────────────────────────────────
+    col_f0, col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 3, 1])
+    filter_job    = col_f0.selectbox("Job", list(job_options.keys()))
     filter_status = col_f1.selectbox("Status", ["All", "sent", "failed", "not_sent"])
-    filter_type   = col_f2.selectbox("Type",   ["All", "Client emails", "Escalations"])
+    filter_type   = col_f2.selectbox("Type",   ["All", "Client emails", "Escalations", "No Overdue"])
     filter_search = col_f3.text_input(
         "Invoice / Client", placeholder="INV-001  or  Acme Corp"
     )
     if col_f4.button("🔄", help="Refresh"):
         st.rerun()
 
+    selected_job_id = job_options[filter_job]
+
     try:
-        logs = _get_all_audit_logs(limit=300)
+        logs = _get_all_audit_logs(limit=300, job_id=selected_job_id)
     except Exception as exc:
         st.error(f"Could not load email logs: {exc}")
         return
@@ -668,9 +717,11 @@ def page_email_logs() -> None:
     def _matches(log: dict) -> bool:
         if filter_status != "All" and log.get("send_status") != filter_status:
             return False
-        if filter_type == "Client emails" and log.get("escalation_required"):
+        if filter_type == "Client emails" and log.get("stage_key") in ["Escalation Flag", "No_overdue"]:
             return False
-        if filter_type == "Escalations" and not log.get("escalation_required"):
+        if filter_type == "Escalations" and not log.get("stage_key") == "Escalation Flag":
+            return False
+        if filter_type == "No Overdue" and not log.get("stage_key") == "No_overdue":
             return False
         if filter_search.strip():
             needle   = filter_search.strip().lower()
@@ -727,19 +778,51 @@ def page_failed_invoices() -> None:
         st.rerun()
 
     try:
-        failed = _get_retryable()
+        failed = _get_retryable()   # returns all rows via list_all()
     except Exception as exc:
         st.error(f"Could not load failed invoices: {exc}")
         return
 
     if not failed:
-        st.success("🎉 No retryable failed invoices right now.")
+        st.success("🎉 No failed invoices recorded.")
         return
 
-    st.info(f"{len(failed)} invoice(s) pending retry.")
-
     df = _to_df(failed)
-    for col in ("next_retry_at", "created_at", "updated_at", "last_attempted_at"):
+
+    # Count by status
+    pending_count = sum(
+        1 for row in failed
+        if str(row.get("status", "")).lower() == "pending"
+    )
+    resolved_count = sum(
+        1 for row in failed
+        if str(row.get("status", "")).lower() == "resolved"
+    )
+    permanent_count = sum(
+        1 for row in failed
+        if str(row.get("status", "")).lower() == "permanent_failure"
+    )
+
+    # Summary metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total", len(failed))
+    c2.metric("⏳ Pending", pending_count)
+    c3.metric("✅ Resolved", resolved_count)
+    c4.metric("❌ Permanent", permanent_count)
+
+    # Informational banner
+    if pending_count > 0:
+        st.info(f"{pending_count} invoice(s) pending retry.")
+    else:
+        st.success("🎉 No invoices are currently pending retry.")
+
+    # Format timestamps for display
+    for col in (
+        "next_retry_at",
+        "created_at",
+        "updated_at",
+        "last_attempted_at",
+    ):
         if col in df.columns:
             df[col] = df[col].astype(str).str[:19]
 
@@ -747,20 +830,27 @@ def page_failed_invoices() -> None:
 
     st.markdown("---")
     st.caption(
-        "APScheduler retries eligible invoices automatically every **15 minutes**. "
-        "Use the button below to trigger an immediate retry cycle."
+        "APScheduler retries eligible invoices automatically every "
+        f"**{FAILED_INVOICE_SCHEDULER_INTERVAL_MINUTES} minutes**. Use the button below to trigger an immediate "
+        "retry cycle."
     )
-    if st.button("⟳ Retry All Now", type="primary"):
-        with st.spinner("Running retry cycle…"):
-            try:
-                from scheduler.retry_scheduler import retry_failed_invoices
-                retry_failed_invoices()
-                st.success(
-                    "Retry cycle completed. Click Refresh to see updated statuses."
-                )
-            except Exception as exc:
-                st.error(f"Retry cycle error: {exc}")
 
+    # Only show manual retry button if something is actually pending
+    if pending_count > 0:
+        if st.button("⟳ Retry All Now", type="primary"):
+            with st.spinner("Running retry cycle…"):
+                try:
+                    from scheduler.retry_scheduler import (
+                        retry_failed_invoices,
+                    )
+
+                    retry_failed_invoices()
+                    st.success(
+                        "Retry cycle completed. Click Refresh to "
+                        "see updated statuses."
+                    )
+                except Exception as exc:
+                    st.error(f"Retry cycle error: {exc}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Router

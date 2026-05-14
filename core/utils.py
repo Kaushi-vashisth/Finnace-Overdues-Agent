@@ -101,10 +101,7 @@ def get_stage_meta (days):
         "stage_meta": stage_values[stage]
     }
 
-def is_retryable_error(error: Exception) -> bool:
-    message = str(error).lower()
-
-    retryable_patterns = (
+RETRYABLE_ERRORS = (
         "429",
         "rate limit",
         "capacity exceeded",
@@ -112,9 +109,12 @@ def is_retryable_error(error: Exception) -> bool:
         "timeout",
         "temporarily unavailable",
         "connection error",
+        'maximum retry attempts'
     )
 
-    return any(pattern in message for pattern in retryable_patterns)
+def is_retryable_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(pattern in message for pattern in RETRYABLE_ERRORS)
 
 def compute_file_hash(file_path: str) -> str:
     sha256 = hashlib.sha256()

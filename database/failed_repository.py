@@ -3,16 +3,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from database.db import get_connection
-
-
-RETRYABLE_ERRORS = (
-    '429',
-    'rate limit',
-    'capacity exceeded',
-    'timeout',
-    'temporarily unavailable',
-    'connection error',
-)
+from core.utils import is_retryable_error
+from core.config import *
 
 
 def utc_now() -> str:
@@ -22,15 +14,19 @@ def utc_now() -> str:
 def classify_error(error_message: str) -> str:
     message = (error_message or "").lower()
 
-    for pattern in RETRYABLE_ERRORS:
-        if pattern in message:
+    if (is_retryable_error(message)):
             return 'retryable'
 
     return 'permanent'
 
 def compute_next_retry(retry_count: int) -> str:
-    delay_minutes = min(60, 2 ** retry_count)
-    next_time = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+    delay_minutes = min(
+        FAILED_INVOICE_MAX_BACKOFF_MINUTES,
+        2 ** retry_count,
+    )
+    next_time = datetime.now(timezone.utc) + timedelta(
+        minutes=delay_minutes
+    )
     return next_time.isoformat()
 
 
@@ -46,17 +42,9 @@ class FailedInvoicesRepository:
         retry_count = invoice_state.get('retry_count', 0)
         max_retries = invoice_state.get('max_retries', 5)
 
-        status = (
-            'pending'
-            if error_type == 'retryable' and retry_count < max_retries
-            else 'permanent_failure'
-        )
+        status = 'pending'
 
-        next_retry_at = (
-            compute_next_retry(retry_count)
-            if status == 'pending'
-            else None
-        )
+        next_retry_at = compute_next_retry(retry_count)
 
         now = utc_now()
         with get_connection() as conn:
@@ -168,3 +156,16 @@ class FailedInvoicesRepository:
                 ),
             )
             conn.commit()
+
+    def list_all(self, limit: int = 500) -> list[dict]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM failed_invoices
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]

@@ -1,5 +1,4 @@
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 from graphs.worker_graph import agent as worker,build_failed_result
 from collections import defaultdict
 from database.audit_repository import AuditRepository 
@@ -8,11 +7,6 @@ from database.jobs_repository import JobsRepository
 from core.models import *
 from core.utils import *
 from core.config import *
-from pprint import pprint
-
-MAX_RETRY_ATTEMPTS = 5
-INITIAL_BACKOFF_SECONDS = 2
-DELAY_BETWEEN_INVOICES = 1
 
 jobs_repository = JobsRepository()
 audit_repository = AuditRepository()
