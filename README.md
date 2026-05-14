@@ -18,11 +18,32 @@ Built with **LangGraph** · **Mistral AI** · **SQLite** · **APScheduler** · *
 
 ---
 
-### 🌐 [Live Demo](https://finnace-overdues-agent-12.streamlit.app/) &nbsp;|&nbsp; 🔍 [Public LangSmith Trace](https://smith.langchain.com/public/a1a5ee0f-da41-48a1-a47e-c4cb4f8ed7f8/r) &nbsp;|&nbsp; ⭐ [GitHub](https://github.com/Kaushi-vashisth/Finnace-Overdues-Agent)
+### 🌐 [Live Demo](https://finnace-overdues-agent-z.streamlit.app/) &nbsp;|&nbsp; 🔍 [Public LangSmith Trace](https://smith.langchain.com/public/a1a5ee0f-da41-48a1-a47e-c4cb4f8ed7f8/r) &nbsp;|&nbsp; ⭐ [GitHub](https://github.com/Kaushi-vashisth/Finnace-Overdues-Agent)
 
 </div>
 
 ---
+
+## 🎥 Project Demo Video
+
+Watch the complete end-to-end demonstration of the Finance Overdue Agent, including:
+
+- CSV invoice upload
+- Automated stage classification
+- AI-generated follow-up emails
+- Human-in-the-loop approval workflow
+- SQLite audit logs
+- APScheduler retry handling
+- LangSmith trace visualization
+- Streamlit dashboard walkthrough
+
+<div align="center">
+
+[![Finance Overdue Agent Demo](https://img.youtube.com/vi/KHJBUM_inG8/maxresdefault.jpg)](https://www.youtube.com/watch?v=KHJBUM_inG8)
+
+**▶️ Click the thumbnail above to watch the full demo on YouTube**
+
+</div>
 
 ## 📌 Problem Statement
 
