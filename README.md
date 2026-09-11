@@ -1,6 +1,6 @@
 <div align="center">
 
-# 💰 Finance Overdue Agent
+# 💰 Credit Flow AI
 
 ### Enterprise-Grade AI Agent for Automated Invoice Follow-Ups
 
@@ -26,7 +26,7 @@ Built with **LangGraph** · **Mistral AI** · **SQLite** · **APScheduler** · *
 
 ## 🎥 Project Demo Video
 
-Watch the complete end-to-end demonstration of the Finance Overdue Agent, including:
+Watch the complete end-to-end demonstration of the Credit Flow AI, including:
 
 - CSV invoice upload
 - Automated stage classification
@@ -39,7 +39,7 @@ Watch the complete end-to-end demonstration of the Finance Overdue Agent, includ
 
 <div align="center">
 
-[![Finance Overdue Agent Demo](https://img.youtube.com/vi/KHJBUM_inG8/maxresdefault.jpg)](https://www.youtube.com/watch?v=KHJBUM_inG8)
+[![Credit Flow AI Demo](https://img.youtube.com/vi/KHJBUM_inG8/maxresdefault.jpg)](https://www.youtube.com/watch?v=KHJBUM_inG8)
 
 **▶️ Click the thumbnail above to watch the full demo on YouTube**
 
@@ -438,7 +438,7 @@ MISTRAL_API_KEY="your_api_key_here"
 LANGCHAIN_TRACING_V2="true"
 LANGCHAIN_ENDPOINT="https://api.smith.langchain.com"
 LANGCHAIN_API_KEY="your_api_key_here"
-LANGCHAIN_PROJECT="Finance Overdue Agent"
+LANGCHAIN_PROJECT="Credit Flow AI"
 
 # Email
 EMAIL_PROVIDER="dry_run"           # dry_run | sendgrid | mailgun
